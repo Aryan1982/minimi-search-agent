@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Search agent</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <aside id="sidebar">
+      <button id="new-chat" type="button">New chat</button>
+      <nav id="conversations" aria-label="Past conversations"></nav>
+    </aside>
+
+    <main>
+      <div id="banner" hidden></div>
+      <div id="thread" aria-live="polite">
+        <section id="welcome">
+          <h1>Ask anything. Come back later and ask what changed.</h1>
+          <p>Answers come from live web search and carry their sources. Every exchange is remembered with its date.</p>
+          <div id="suggestions">
+            <button type="button">Compare managed Postgres hosting prices for a small SaaS</button>
+            <button type="button">Shortlist 5 CRM tools for a 20-person sales team</button>
+            <button type="button">What did I ask you yesterday? Is your answer still correct today?</button>
+          </div>
+        </section>
+      </div>
+
+      <form id="composer">
+        <textarea id="input" rows="1" placeholder="Ask a question" aria-label="Message" autofocus></textarea>
+        <button id="send" type="submit">Send</button>
+      </form>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
