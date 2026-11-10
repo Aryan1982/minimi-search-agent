@@ -86,7 +86,12 @@ export async function webSearch(input: SearchInput, signal?: AbortSignal): Promi
     headers: { "content-type": "application/json", authorization: `Bearer ${config.tavilyKey}` },
     body: JSON.stringify({
       query: input.query,
-      search_depth: "basic",
+      // Two depths at the same credit cost, chosen by measurement. Open queries use "fast"
+      // (about 1.2 s against 2.4 s for "basic" on three pricing queries). A search pinned
+      // to a vendor's own site is a re-check of a specific figure, and there "fast" returned
+      // the wrong passages: on pipedrive.com and zoho.com pricing queries it surfaced no plan
+      // prices at all, where "basic" surfaced all of them. Being right is worth the second.
+      search_depth: input.domains.length > 0 ? "basic" : "fast",
       max_results: 5,
       chunks_per_source: 3,
       include_published_date: true,

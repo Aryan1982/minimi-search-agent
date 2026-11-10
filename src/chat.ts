@@ -1,4 +1,4 @@
-import { type AgentEvent, type AgentResult, buildMessages, runAgent } from "./agent.ts";
+import { type AgentEvent, type AgentResult, buildHistory, runAgent } from "./agent.ts";
 import { formatDateTime, localDate, now } from "./clock.ts";
 import { config } from "./config.ts";
 import { completeTurn, conversationTurns, insertTurn, upsertConversation } from "./db.ts";
@@ -55,28 +55,33 @@ export async function chatTurn(
     });
   }
 
+  // Where the time went, in seconds from the start: "3.1 search x4 | 5.8 results | 6.9 text".
+  const timeline: string[] = [];
   let firstTextMs: number | null = null;
+  let writing = false;
   const result = await runAgent(
-    buildMessages(history, context, question),
+    buildHistory(history),
+    context,
+    question,
     (event) => {
-      if (event.type === "text") firstTextMs ??= Math.round(performance.now() - started);
+      const elapsed = performance.now() - started;
+      if (event.type === "text" && !writing) timeline.push(`${(elapsed / 1000).toFixed(1)} text`);
+      writing = event.type === "text";
+      if (event.type === "text") firstTextMs ??= Math.round(elapsed);
       // Text before a search was a remark, not the answer; time-to-first-text restarts.
       if (event.type === "note") firstTextMs = null;
+      if (event.type === "searching") timeline.push(`${(elapsed / 1000).toFixed(1)} search x${event.searches.length}`);
+      if (event.type === "sources") timeline.push(`${(elapsed / 1000).toFixed(1)} results`);
       emit(event);
     },
     signal,
   );
 
   completeTurn(turnId, result.answer, result.sources);
-  emit({
-    type: "done",
-    turnId,
-    answer: result.answer,
-    sources: result.sources,
-    ms: Math.round(performance.now() - started),
-    firstTextMs,
-    searches: result.searches,
-  });
+  const ms = Math.round(performance.now() - started);
+  timeline.push(`${(ms / 1000).toFixed(1)} done`);
+  console.log(`[turn ${turnId}] ${timeline.join(" | ")}  (${result.usage.input}+${result.usage.cachedInput} cached in, ${result.usage.output} out)`);
+  emit({ type: "done", turnId, answer: result.answer, sources: result.sources, ms, firstTextMs, searches: result.searches });
 
   const remembered = extractMemory(turnId).catch((error: Error) => {
     console.error(`[memory] extraction failed for turn ${turnId}: ${error.message}`);

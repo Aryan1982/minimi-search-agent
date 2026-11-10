@@ -96,13 +96,32 @@ function addAssistantMessage() {
   let text = "";
   let frame = 0;
 
+  /** The one pulsing line that says what is happening right now; gone once text arrives. */
+  let status = null;
+  let searchLine = null;
+
   function trailLine(icon, className) {
     const line = el("div", className);
     const body = el("span");
     line.append(el("span", "icon", icon), body);
-    trail.append(line);
+    // Records go above the live status line, which stays last.
+    trail.insertBefore(line, status);
     return body;
   }
+
+  function setStatus(message) {
+    status?.remove();
+    status = null;
+    status = trailLine("\u25CF", "pending").parentElement;
+    status.lastChild.textContent = message;
+  }
+
+  function clearStatus() {
+    status?.remove();
+    status = null;
+    searchLine?.classList.remove("pending");
+  }
+  setStatus("Thinking");
 
   function draw() {
     frame = 0;
@@ -123,6 +142,7 @@ function addAssistantMessage() {
           body.append(`Recalled from ${x.date}: `, el("q", "", x.question.length > 110 ? `${x.question.slice(0, 110)}\u2026` : x.question));
         }
       } else if (event.type === "text") {
+        clearStatus();
         text += event.text;
         // At most one markdown render per frame, however fast tokens arrive.
         frame ||= requestAnimationFrame(draw);
@@ -131,16 +151,20 @@ function addAssistantMessage() {
         text = "";
         answer.replaceChildren();
       } else if (event.type === "searching") {
-        const body = trailLine("\u25CF", "pending");
-        body.textContent = `Searching: ${event.searches.map((s) => (s.domains.length ? `${s.query} (${s.domains.join(", ")})` : s.query)).join("  \u00B7  ")}`;
+        const queries = event.searches.map((s) => (s.domains.length ? `${s.query} (${s.domains.join(", ")})` : s.query)).join("  \u00B7  ");
+        setStatus(`Searching: ${queries}`);
+        // The same line stays in the trail as a record once the results are in.
+        searchLine = status;
+        status = null;
       } else if (event.type === "sources") {
         for (const s of event.sources) sources.set(s.n, s);
-        const pending = trail.querySelector(".pending");
-        if (pending) {
-          pending.className = "";
-          pending.querySelector(".icon").textContent = "\u2315";
-          pending.lastChild.textContent = pending.lastChild.textContent.replace(/^Searching/, "Searched");
+        if (searchLine) {
+          searchLine.className = "";
+          searchLine.firstChild.textContent = "\u2315";
+          searchLine.lastChild.textContent = searchLine.lastChild.textContent.replace(/^Searching/, "Searched");
+          searchLine = null;
         }
+        setStatus(`Reading ${sources.size} ${sources.size === 1 ? "page" : "pages"}`);
       } else if (event.type === "done") {
         this.finish(event.answer, event.sources);
         const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`;
@@ -158,6 +182,7 @@ function addAssistantMessage() {
     },
     finish(finalText, cited) {
       cancelAnimationFrame(frame);
+      clearStatus();
       for (const s of cited) sources.set(s.n, s);
       renderAnswer(answer, finalText, sources);
       for (const s of cited) {
@@ -171,7 +196,7 @@ function addAssistantMessage() {
     },
     fail(message) {
       cancelAnimationFrame(frame);
-      trail.querySelector(".pending")?.classList.remove("pending");
+      clearStatus();
       root.append(el("div", "error", message));
     },
   };

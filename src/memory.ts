@@ -12,6 +12,9 @@ import { type Turn, claimsFor, memoryStats, recentTurns, turnsInRange, turnsMatc
 const FULL_EXCHANGES = 4;
 const ONE_LINERS = 20;
 const ANSWER_CHARS = 4000;
+// Extraction lists claims most important first. A dozen is a checklist; thirty made the model
+// audit every detail of the old answer, which was slow to think through and long to read.
+const CLAIMS_SHOWN = 12;
 
 export interface Recall {
   /** The user is talking about an earlier conversation with the agent. */
@@ -100,7 +103,10 @@ export function recall(text: string, now: Date, tz: string, inContext: ReadonlyS
   } else {
     // An ordinary question. Surface clearly related history as one-liners only, and only when
     // it overlaps on two or more topic words, so unrelated memory stays out of the prompt.
-    const strong = topical.filter((t) => overlap(t, terms) >= Math.min(2, terms.length));
+    // Not in a follow-up, though: mid-conversation, "which of those would you pick?" points at
+    // the conversation itself, and stray mentions of other chats made the model hedge about
+    // which "those" was meant.
+    const strong = inContext.size > 0 ? [] : topical.filter((t) => overlap(t, terms) >= Math.min(2, terms.length));
     return { refersToHistory, dates: [], exchanges: [], mentions: strong.slice(0, 3) };
   }
 
@@ -123,13 +129,18 @@ export function renderContext(r: Recall, now: Date, tz: string): string {
   const hasMemory = r.exchanges.length > 0 || r.mentions.length > 0;
 
   if (hasMemory || r.refersToHistory) {
-    const stats = memoryStats();
     lines.push(`<memory>`);
-    lines.push(
-      stats.count === 0
-        ? `Stored history: empty. There is no record of any earlier conversation.`
-        : `Stored history: ${stats.count} exchanges, ${formatDate(stats.first!)} to ${formatDate(stats.last!)}.`,
-    );
+    // How much is stored matters only when the lookup came up short: it lets the model say
+    // "nothing on that date, though I do have history from X to Y". When the exchange was
+    // found, the count is noise the model tends to repeat back.
+    if (r.exchanges.length === 0 || r.dates.some((d) => !d.found)) {
+      const stats = memoryStats();
+      lines.push(
+        stats.count === 0
+          ? `Stored history: empty. There is no record of any earlier conversation.`
+          : `Stored history: ${stats.count} exchanges in total, from ${formatDate(stats.first!)} to ${formatDate(stats.last!)}. Only those shown below are relevant to this message.`,
+      );
+    }
     for (const d of r.dates) {
       lines.push(
         d.found
@@ -151,7 +162,7 @@ export function renderContext(r: Recall, now: Date, tz: string): string {
       if (t.sources.length > 0) {
         lines.push(`<sources_then>`, ...t.sources.map((s) => `[${s.n}] ${s.title} ${s.url}`), `</sources_then>`);
       }
-      const own = claims.filter((c) => c.turnId === t.id);
+      const own = claims.filter((c) => c.turnId === t.id).slice(0, CLAIMS_SHOWN);
       if (own.length > 0) {
         lines.push(`<claims_then>`, ...own.map((c) => `- ${c.entity} | ${c.attribute} | ${c.value} | ${c.sourceUrl}`), `</claims_then>`);
       }

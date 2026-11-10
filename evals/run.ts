@@ -18,6 +18,8 @@ if (missingKeys().length > 0) {
   process.exit(1);
 }
 
+// The judge stays fixed while the agent's model is varied, so runs are comparable.
+const JUDGE_MODEL = "claude-sonnet-5-5";
 const tz = DEFAULT_TZ;
 const today = localDate(new Date(), tz);
 const days: Days = {
@@ -27,7 +29,7 @@ const days: Days = {
 
 async function judge(question: string, context: string, reply: string, rubric: string): Promise<{ pass: boolean; reason: string }> {
   const message = await anthropic.messages.create({
-    model: config.agentModel,
+    model: JUDGE_MODEL,
     max_tokens: 2000,
     output_config: {
       effort: "low",
@@ -56,12 +58,13 @@ async function judge(question: string, context: string, reply: string, rubric: s
   return JSON.parse(text) as { pass: boolean; reason: string };
 }
 
-const filter = process.argv[2]?.toLowerCase();
+// Comma-separated name fragments, e.g. `npm run eval -- stale,wrong day`.
+const filters = process.argv[2]?.toLowerCase().split(",");
 const rows: Record<string, string | number>[] = [];
 let failures = 0;
 
 for (const scenario of SCENARIOS) {
-  if (filter && !scenario.name.toLowerCase().includes(filter)) continue;
+  if (filters && !filters.some((f) => scenario.name.toLowerCase().includes(f))) continue;
   clearMemory();
   if (scenario.history.length > 0) {
     importHistory({
@@ -82,6 +85,7 @@ for (const scenario of SCENARIOS) {
   let ms = 0;
   let searches = 0;
   try {
+    // chatTurn logs a "[turn N] ..." line showing where the time went.
     const result = await chatTurn(`eval-${rows.length}`, question, tz, (event) => {
       if (event.type === "done") ({ firstTextMs, ms } = event);
     });
