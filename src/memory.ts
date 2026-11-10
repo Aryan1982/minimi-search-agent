@@ -1,14 +1,14 @@
 import { formatDate, formatDateTime, localDate } from "./clock.ts";
 import { type DateWindow, resolveDates } from "./dates.ts";
-import { type Turn, claimsFor, memoryStats, recentTurns, rechecksFor, turnsInRange, turnsMatching } from "./db.ts";
+import { type Turn, answeredTurns, claimsFor, memoryStats, recentTurns, rechecksFor, turnsInRange } from "./db.ts";
 import type { SearchInput } from "./search.ts";
 
 // Recall happens here, in the harness, before the model is called. The agent has one tool and
 // it is web search; memory is not a second tool. That also removes a model round trip: by the
 // time the model reads the question, the past exchange it refers to is already on the page.
 //
-// No model is involved in recall. Dates come from dates.ts, topics from a full-text index,
-// so the same question always recalls the same thing and the whole path is unit-tested.
+// No model is involved in recall. Dates come from dates.ts, topics from a word-match ranking
+// below, so the same question always recalls the same thing and the whole path is unit-tested.
 
 const FULL_EXCHANGES = 4;
 const ONE_LINERS = 20;
@@ -60,6 +60,59 @@ export function topicTerms(text: string): string[] {
   return [...new Set(words.filter((w) => w.length >= 3 && !STOPWORDS.has(w) && !/^\d+$/.test(w)))];
 }
 
+/** "hosting" and "hosts" both become "host"; "cheapest" becomes "cheap". Crude, and enough. */
+function stem(word: string): string {
+  const cut = word.replace(/(?:ing|est|ed|es|s)$/, "");
+  return cut.length >= 4 ? cut : word;
+}
+
+// How much a match counts by where it is found. The question, the one-line summary and the
+// entity list say what an exchange was about; the long answer body mentions many things in passing.
+const FIELD_WEIGHTS = { question: 4, summary: 3, entities: 5, answer: 1 } as const;
+
+/**
+ * Rank exchanges by how well they match the topic words, best first; non-matches are dropped.
+ *
+ * This is BM25 in a few lines: a word that appears in few exchanges counts for more than one
+ * that appears in most, and repeats of a word count for less each time. It runs in code over
+ * every stored exchange. One person's history is thousands of rows at most, which takes a
+ * millisecond, and it removes the dependency on SQLite's FTS5 extension, which Node 22.13's
+ * built-in SQLite turned out not to include.
+ */
+function rankByTopic(terms: string[], turns: Turn[]): Turn[] {
+  const wanted = [...new Set(terms.map(stem))];
+  // For each turn: stem -> weighted, saturating count.
+  const scoresByTurn = turns.map((turn) => {
+    const score = new Map<string, number>();
+    for (const [field, weight] of Object.entries(FIELD_WEIGHTS)) {
+      const counts = new Map<string, number>();
+      for (const word of (turn[field as keyof typeof FIELD_WEIGHTS] ?? "").toLowerCase().match(/[a-z0-9+#.-]+/g) ?? []) {
+        const s = stem(word.replace(/^[.-]+|[.-]+$/g, ""));
+        counts.set(s, (counts.get(s) ?? 0) + 1);
+      }
+      for (const s of wanted) {
+        const tf = counts.get(s) ?? 0;
+        if (tf > 0) score.set(s, (score.get(s) ?? 0) + (weight * tf) / (tf + 1.2));
+      }
+    }
+    return score;
+  });
+
+  const total = turns.length;
+  const rarity = new Map(
+    wanted.map((s) => {
+      const containing = scoresByTurn.filter((score) => score.has(s)).length;
+      return [s, Math.log(1 + (total - containing + 0.5) / (containing + 0.5))];
+    }),
+  );
+
+  return turns
+    .map((turn, i) => ({ turn, score: [...scoresByTurn[i]!].reduce((sum, [s, value]) => sum + value * rarity.get(s)!, 0) }))
+    .filter((ranked) => ranked.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map((ranked) => ranked.turn);
+}
+
 /**
  * Find the past exchanges this message is about.
  * `inContext` holds turns the model will already see as conversation history.
@@ -69,8 +122,8 @@ export function recall(text: string, now: Date, tz: string, inContext: ReadonlyS
   const terms = topicTerms(text);
   const fresh = (t: Turn) => !inContext.has(t.id);
 
-  // Topic matches across all of memory, best first. Quoting makes each term a literal.
-  const topical = terms.length > 0 ? turnsMatching(terms.map((t) => `"${t}"`).join(" OR "), 30).filter(fresh) : [];
+  // Topic matches across all of memory, best first.
+  const topical = terms.length > 0 ? rankByTopic(terms, answeredTurns().filter(fresh)).slice(0, 30) : [];
   const topicRank = new Map(topical.map((t, i) => [t.id, i]));
 
   // Each date phrase can have more than one honest reading. Prefer the reading that holds an

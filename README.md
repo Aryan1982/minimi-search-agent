@@ -72,7 +72,7 @@ src/
   search.ts    the web_search tool (Tavily)
   extract.ts   background: list the checkable claims in an answer
   prompt.ts    the system prompt
-  db.ts        SQLite (node:sqlite): turns, full-text index, claims
+  db.ts        SQLite (node:sqlite): turns, claims, re-check plans
   clock.ts     the injectable clock and timezone helpers
   import.ts    load dated history
 public/        the chat interface (no build step)

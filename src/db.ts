@@ -81,11 +81,6 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS turns_by_date ON turns(local_date);
   CREATE INDEX IF NOT EXISTS turns_by_conversation ON turns(conversation_id, id);
 
-  -- Topic index over answered turns. rowid = turns.id.
-  CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
-    question, answer, summary, entities, tokenize = 'porter unicode61'
-  );
-
   -- What an answer asserted, one checkable fact per row, each tied to the page it came from.
   CREATE TABLE IF NOT EXISTS claims (
     id INTEGER PRIMARY KEY,
@@ -171,10 +166,8 @@ export function insertTurn(t: Pick<Turn, "conversationId" | "at" | "localDate" |
   return Number(result.lastInsertRowid);
 }
 
-/** Store the answer and make the turn findable by topic. */
 export function completeTurn(id: number, answer: string, sources: Source[]): void {
   db.prepare("UPDATE turns SET answer = ?, sources = ? WHERE id = ?").run(answer, JSON.stringify(sources), id);
-  indexTurn(id);
 }
 
 export function setExtraction(id: number, summary: string, entities: string, claims: Omit<Claim, "turnId">[], rechecks: Recheck[]): void {
@@ -185,14 +178,6 @@ export function setExtraction(id: number, summary: string, entities: string, cla
   db.prepare("DELETE FROM rechecks WHERE turn_id = ?").run(id);
   const plan = db.prepare("INSERT INTO rechecks (turn_id, subject, query, domain) VALUES (?, ?, ?, ?)");
   for (const r of rechecks) plan.run(id, r.subject, r.query, r.domain);
-  indexTurn(id);
-}
-
-function indexTurn(id: number): void {
-  db.prepare("DELETE FROM turns_fts WHERE rowid = ?").run(id);
-  db.prepare(
-    "INSERT INTO turns_fts (rowid, question, answer, summary, entities) SELECT id, question, answer, summary, entities FROM turns WHERE id = ?",
-  ).run(id);
 }
 
 export function getTurn(id: number): Turn | undefined {
@@ -214,18 +199,9 @@ export function turnsInRange(from: string, to: string): Turn[] {
     .map(toTurn);
 }
 
-/**
- * Best topic matches, best first. `match` is an FTS5 query. The weights favour the
- * question, the summary and the entity list over the long answer body.
- */
-export function turnsMatching(match: string, limit: number): Turn[] {
-  return db
-    .prepare(
-      `SELECT t.* FROM turns_fts f JOIN turns t ON t.id = f.rowid
-       WHERE turns_fts MATCH ? ORDER BY bm25(turns_fts, 4.0, 1.0, 3.0, 5.0) LIMIT ?`,
-    )
-    .all(match, limit)
-    .map(toTurn);
+/** Every remembered exchange, for topic ranking in memory.ts. */
+export function answeredTurns(): Turn[] {
+  return db.prepare("SELECT * FROM turns WHERE answer IS NOT NULL ORDER BY at").all().map(toTurn);
 }
 
 export function recentTurns(limit: number): Turn[] {
@@ -257,7 +233,7 @@ export function rechecksFor(turnIds: number[]): Recheck[] {
 
 /** Forget every conversation. The evals call this between scenarios; the app never does. */
 export function clearMemory(): void {
-  db.exec("DELETE FROM claims; DELETE FROM rechecks; DELETE FROM turns_fts; DELETE FROM turns; DELETE FROM conversations;");
+  db.exec("DELETE FROM claims; DELETE FROM rechecks; DELETE FROM turns; DELETE FROM conversations;");
 }
 
 // --- search cache ---
