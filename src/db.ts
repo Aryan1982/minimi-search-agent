@@ -247,4 +247,6 @@ export function cachedSearch(key: string, maxAgeMs: number, nowMs: number): stri
 
 export function cacheSearch(key: string, results: string, nowMs: number): void {
   db.prepare("INSERT OR REPLACE INTO search_cache (key, at, results) VALUES (?, ?, ?)").run(key, nowMs, results);
+  // Entries are only ever read for a few minutes; drop day-old ones so the table stays small.
+  db.prepare("DELETE FROM search_cache WHERE at < ?").run(nowMs - 86_400_000);
 }
