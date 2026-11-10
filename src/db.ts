@@ -39,6 +39,14 @@ export interface Claim {
   sourceUrl: string;
 }
 
+export interface Recheck {
+  /** The product or thing being checked, e.g. "Pipedrive". */
+  subject: string;
+  query: string;
+  /** Its official site when known ("pipedrive.com"), else empty. */
+  domain: string;
+}
+
 export interface Conversation {
   id: string;
   title: string;
@@ -88,6 +96,16 @@ db.exec(`
     source_url TEXT NOT NULL DEFAULT ''
   );
   CREATE INDEX IF NOT EXISTS claims_by_turn ON claims(turn_id);
+
+  -- The searches that would verify an answer's claims later, written when the answer is stored.
+  CREATE TABLE IF NOT EXISTS rechecks (
+    id INTEGER PRIMARY KEY,
+    turn_id INTEGER NOT NULL REFERENCES turns(id),
+    subject TEXT NOT NULL,
+    query TEXT NOT NULL,
+    domain TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS rechecks_by_turn ON rechecks(turn_id);
 
   CREATE TABLE IF NOT EXISTS search_cache (
     key TEXT PRIMARY KEY,
@@ -159,11 +177,14 @@ export function completeTurn(id: number, answer: string, sources: Source[]): voi
   indexTurn(id);
 }
 
-export function setExtraction(id: number, summary: string, entities: string, claims: Omit<Claim, "turnId">[]): void {
+export function setExtraction(id: number, summary: string, entities: string, claims: Omit<Claim, "turnId">[], rechecks: Recheck[]): void {
   db.prepare("UPDATE turns SET summary = ?, entities = ? WHERE id = ?").run(summary, entities, id);
   db.prepare("DELETE FROM claims WHERE turn_id = ?").run(id);
   const insert = db.prepare("INSERT INTO claims (turn_id, entity, attribute, value, source_url) VALUES (?, ?, ?, ?, ?)");
   for (const c of claims) insert.run(id, c.entity, c.attribute, c.value, c.sourceUrl);
+  db.prepare("DELETE FROM rechecks WHERE turn_id = ?").run(id);
+  const plan = db.prepare("INSERT INTO rechecks (turn_id, subject, query, domain) VALUES (?, ?, ?, ?)");
+  for (const r of rechecks) plan.run(id, r.subject, r.query, r.domain);
   indexTurn(id);
 }
 
@@ -227,9 +248,16 @@ export function claimsFor(turnIds: number[]): Claim[] {
     .all(...turnIds) as unknown as Claim[];
 }
 
+export function rechecksFor(turnIds: number[]): Recheck[] {
+  if (turnIds.length === 0) return [];
+  return db
+    .prepare(`SELECT subject, query, domain FROM rechecks WHERE turn_id IN (${turnIds.map(() => "?").join(",")}) ORDER BY id`)
+    .all(...turnIds) as unknown as Recheck[];
+}
+
 /** Forget every conversation. The evals call this between scenarios; the app never does. */
 export function clearMemory(): void {
-  db.exec("DELETE FROM claims; DELETE FROM turns_fts; DELETE FROM turns; DELETE FROM conversations;");
+  db.exec("DELETE FROM claims; DELETE FROM rechecks; DELETE FROM turns_fts; DELETE FROM turns; DELETE FROM conversations;");
 }
 
 // --- search cache ---

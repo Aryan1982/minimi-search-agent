@@ -3,7 +3,7 @@ import { formatDateTime, localDate, now } from "./clock.ts";
 import { config } from "./config.ts";
 import { completeTurn, conversationTurns, insertTurn, upsertConversation } from "./db.ts";
 import { extractMemory } from "./extract.ts";
-import { recall, renderContext } from "./memory.ts";
+import { recall, recheckSearches, renderContext } from "./memory.ts";
 
 // One user turn, start to finish:
 //   1. recall   - code only: resolve dates, look up past exchanges, render the context block
@@ -75,6 +75,7 @@ export async function chatTurn(
       emit(event);
     },
     signal,
+    recheckSearches(question, recalled, at),
   );
 
   completeTurn(turnId, result.answer, result.sources);

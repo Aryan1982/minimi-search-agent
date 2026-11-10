@@ -1,6 +1,7 @@
 import { formatDate, formatDateTime, localDate } from "./clock.ts";
 import { type DateWindow, resolveDates } from "./dates.ts";
-import { type Turn, claimsFor, memoryStats, recentTurns, turnsInRange, turnsMatching } from "./db.ts";
+import { type Turn, claimsFor, memoryStats, recentTurns, rechecksFor, turnsInRange, turnsMatching } from "./db.ts";
+import type { SearchInput } from "./search.ts";
 
 // Recall happens here, in the harness, before the model is called. The agent has one tool and
 // it is web search; memory is not a second tool. That also removes a model round trip: by the
@@ -121,6 +122,32 @@ export function recall(text: string, now: Date, tz: string, inContext: ReadonlyS
 function overlap(turn: Turn, terms: string[]): number {
   const haystack = `${turn.question} ${turn.summary} ${turn.entities}`.toLowerCase();
   return terms.filter((term) => haystack.includes(term)).length;
+}
+
+const ASKS_IF_STILL_TRUE = /\b(?:chang\w*|still|since|updat\w*|correct|accurate|valid|true|current\w*|latest|different|increas\w*|rais\w*|cheaper|outdated|stale)\b/i;
+const ASKS_WHAT_IS_NEW = /\b(?:shipp\w*|launch\w*|releas\w*|announc\w*|news|something\s+(?:big|new))\b/i;
+
+/**
+ * The searches a re-check will need, known before the model is called.
+ *
+ * "Has any of that changed since?" always needs the same thing: each subject of the recalled
+ * answer looked up again. Waiting for the model to say so cost a full step (2-3 s) before any
+ * search started. The plan is instead written in the background when an answer is stored
+ * (extract.ts), where latency is free, and run here the moment the question arrives. If the
+ * plan misses something, the model still has the tool and searches again.
+ */
+export function recheckSearches(text: string, r: Recall, now: Date): SearchInput[] {
+  if (!r.refersToHistory || !ASKS_IF_STILL_TRUE.test(text) || r.exchanges.length === 0) return [];
+  const plan = rechecksFor(r.exchanges.map((t) => t.id)).slice(0, 6);
+  const searches: SearchInput[] = plan.map((p) => ({ query: p.query, domains: p.domain ? [p.domain] : [], recency: null }));
+
+  // "...or shipped something big since?" also needs news, limited to the time since we spoke.
+  if (ASKS_WHAT_IS_NEW.test(text)) {
+    const days = (now.getTime() - Math.min(...r.exchanges.map((t) => t.at))) / 86_400_000;
+    const recency = days <= 7 ? "week" : days <= 31 ? "month" : "year";
+    for (const p of plan) searches.push({ query: `${p.subject} new release announcement`, domains: [], recency });
+  }
+  return searches;
 }
 
 /** The block placed in front of the user's message. Stored with the turn and replayed as is. */

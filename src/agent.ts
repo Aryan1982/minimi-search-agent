@@ -68,12 +68,43 @@ export async function runAgent(
   question: string,
   emit: (event: AgentEvent) => void,
   signal?: AbortSignal,
+  /** Searches to run before the model is first called. */
+  prefetch: SearchInput[] = [],
 ): Promise<AgentResult> {
   // url -> numbered source. Numbers are stable for the whole turn, so the same page found by
   // two searches is one citation.
   const registry = new Map<string, Source>();
   const searched: Searched[] = [];
   const usage = { input: 0, cachedInput: 0, output: 0 };
+
+  /** Run a batch of searches in parallel and record what came back. */
+  async function search(requests: { call: string; input: SearchInput | Error }[]): Promise<void> {
+    const valid = requests.map((r) => r.input).filter((input): input is SearchInput => !(input instanceof Error));
+    emit({ type: "searching", searches: valid.map(({ query, domains }) => ({ query, domains })) });
+    const outcomes = await Promise.all(
+      requests.map(({ input }) => (input instanceof Error ? input : webSearch(input, signal).catch((error: Error) => error))),
+    );
+    signal?.throwIfAborted();
+
+    const firstNew = registry.size + 1;
+    requests.forEach(({ call }, i) => {
+      const outcome = outcomes[i]!;
+      // Numbers are assigned here, in arrival order, before the results are rendered.
+      if (!(outcome instanceof Error)) {
+        for (const hit of outcome) {
+          if (!registry.has(hit.url)) registry.set(hit.url, { n: registry.size + 1, url: hit.url, title: hit.title });
+        }
+      }
+      searched.push({ call, outcome });
+    });
+    emit({ type: "sources", sources: [...registry.values()].filter((s) => s.n >= firstNew) });
+  }
+
+  // Searches the harness could work out for itself (re-checks of recalled claims) run before
+  // the model's first step, so that step can go straight to writing.
+  if (prefetch.length > 0) {
+    await search(prefetch.map((input) => ({ call: JSON.stringify({ query: input.query, domains: input.domains }), input })));
+  }
 
   for (let step = 1; ; step++) {
     // The context block (time + recalled memory) is identical on every step of the turn, so it
@@ -91,9 +122,14 @@ export async function runAgent(
         // On the last allowed step the model must answer with what it has.
         tool_choice: step < config.maxSteps ? { type: "auto" } : { type: "none" },
         output_config: { effort: config.agentEffort },
-        // Thinking is left at the model's default (adaptive). Its lowest setting was measured:
-        // it starts writing sooner after a search, but twice in five runs it answered around a
-        // missing fact instead of searching once more. Being right won.
+        // Thinking stays at the model's default (adaptive) with one exception. With its lowest
+        // setting everywhere, the model started writing sooner but twice in five runs answered
+        // around a missing fact instead of searching once more, so the default won. The
+        // exception is a first step whose searches were already planned and run by the
+        // harness: there the deciding is done and the step only has to read and write, and
+        // the default spent 5-11 s thinking before the first word. Only Sonnet 5.5 accepts
+        // this value.
+        ...(step === 1 && prefetch.length > 0 && config.agentModel === "claude-sonnet-5-5" && { thinking: { type: "between_tools" as const } }),
         messages: [...history, { role: "user", content }],
       },
       { signal },
@@ -124,36 +160,17 @@ export async function runAgent(
     }
 
     emit({ type: "note" });
-
     // The model writes the tool input, so a malformed call is possible. It is reported back
     // like a failed search and the turn carries on.
-    const inputs = calls.map((call): SearchInput | Error => {
-      try {
-        return parseSearchInput(call.input);
-      } catch (error) {
-        return error as Error;
-      }
-    });
-    const valid = inputs.filter((input): input is SearchInput => !(input instanceof Error));
-    emit({ type: "searching", searches: valid.map(({ query, domains }) => ({ query, domains })) });
-
-    const outcomes = await Promise.all(
-      inputs.map((input) => (input instanceof Error ? input : webSearch(input, signal).catch((error: Error) => error))),
-    );
-    signal?.throwIfAborted();
-
-    const firstNew = registry.size + 1;
-    calls.forEach((call, i) => {
-      const outcome = outcomes[i]!;
-      // Numbers are assigned here, in arrival order, before the results are rendered.
-      if (!(outcome instanceof Error)) {
-        for (const hit of outcome) {
-          if (!registry.has(hit.url)) registry.set(hit.url, { n: registry.size + 1, url: hit.url, title: hit.title });
+    await search(
+      calls.map((call) => {
+        try {
+          return { call: JSON.stringify(call.input), input: parseSearchInput(call.input) };
+        } catch (error) {
+          return { call: JSON.stringify(call.input), input: error as Error };
         }
-      }
-      searched.push({ call: JSON.stringify(call.input), outcome });
-    });
-    emit({ type: "sources", sources: [...registry.values()].filter((s) => s.n >= firstNew) });
+      }),
+    );
   }
 }
 

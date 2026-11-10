@@ -4,6 +4,7 @@ import { chatTurn } from "../src/chat.ts";
 import { DEFAULT_TZ, addDays, atLocalTime, formatDate, localDate } from "../src/clock.ts";
 import { config, missingKeys } from "../src/config.ts";
 import { clearMemory } from "../src/db.ts";
+import { extractMemory } from "../src/extract.ts";
 import { importHistory } from "../src/import.ts";
 import { type Days, SCENARIOS } from "./scenarios.ts";
 
@@ -67,7 +68,7 @@ for (const scenario of SCENARIOS) {
   if (filters && !filters.some((f) => scenario.name.toLowerCase().includes(f))) continue;
   clearMemory();
   if (scenario.history.length > 0) {
-    importHistory({
+    const planted = importHistory({
       tz,
       conversations: scenario.history.map((h, i) => ({
         messages: [
@@ -77,6 +78,8 @@ for (const scenario of SCENARIOS) {
         ],
       })),
     });
+    // As in the app: each stored exchange gets its summary and claims before it is asked about.
+    for (const id of planted) await extractMemory(id);
   }
 
   const question = scenario.ask(days);

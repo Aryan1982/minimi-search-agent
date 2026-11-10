@@ -32,14 +32,29 @@ const SCHEMA = {
         additionalProperties: false,
       },
     },
+    rechecks: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          subject: { type: "string", description: "The product, company or thing to re-check, e.g. 'Pipedrive'." },
+          query: { type: "string", description: "A search query that would find its current facts, e.g. 'Pipedrive pricing plans per user'." },
+          domain: { type: "string", description: "The subject's own official site, e.g. 'pipedrive.com'. Empty string if unsure." },
+        },
+        required: ["subject", "query", "domain"],
+        additionalProperties: false,
+      },
+    },
   },
-  required: ["summary", "entities", "claims"],
+  required: ["summary", "entities", "claims", "rechecks"],
   additionalProperties: false,
 };
 
 const INSTRUCTIONS = `You are building the memory of a chat assistant. Below is one exchange: a user's question and the assistant's answer. Later the user may ask "has any of that changed?", and the assistant will re-check the answer against the web. Record what it will need for that.
 
-For claims, list the facts in the answer that could be different next month: prices, plan names and limits, version numbers, release dates, availability, rankings, who holds a role, what a product includes. One fact per claim, at most 30, most important first. Copy values exactly as the answer states them. Leave out opinions, advice, and facts that do not change (definitions, history, arithmetic). If the answer has no such facts, return an empty list.`;
+For claims, list the facts in the answer that could be different next month: prices, plan names and limits, version numbers, release dates, availability, rankings, who holds a role, what a product includes. One fact per claim, at most 30, most important first. Copy values exactly as the answer states them. Leave out opinions, advice, and facts that do not change (definitions, history, arithmetic). If the answer has no such facts, return an empty list.
+
+For rechecks, write the web searches that would verify the answer later: one per product or subject, at most 6, covering every item of a list or shortlist even if the answer gave no figures for it. Write each query the way you would type it into a search engine to find the current facts (for a priced product, its pricing page). Set domain to the subject's own official site only when you are sure of it. If nothing in the answer can go out of date, return an empty list.`;
 
 export async function extractMemory(turnId: number): Promise<void> {
   const turn = getTurn(turnId);
@@ -65,6 +80,7 @@ export async function extractMemory(turnId: number): Promise<void> {
     summary: string;
     entities: string[];
     claims: { entity: string; attribute: string; value: string; citation: number }[];
+    rechecks: { subject: string; query: string; domain: string }[];
   };
   const urlByNumber = new Map(turn.sources.map((s) => [s.n, s.url]));
   setExtraction(
@@ -76,6 +92,12 @@ export async function extractMemory(turnId: number): Promise<void> {
       attribute: c.attribute,
       value: c.value,
       sourceUrl: urlByNumber.get(c.citation) ?? "",
+    })),
+    out.rechecks.slice(0, 6).map((r) => ({
+      subject: r.subject.trim(),
+      query: r.query.trim(),
+      // Keep a bare hostname only; anything else is dropped rather than trusted.
+      domain: /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(r.domain.trim()) ? r.domain.trim().toLowerCase().replace(/^www\./, "") : "",
     })),
   );
 }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { localDate } from "../src/clock.ts";
 import * as db from "../src/db.ts";
-import { recall, renderContext } from "../src/memory.ts";
+import { recall, recheckSearches, renderContext } from "../src/memory.ts";
 
 const TZ = "Asia/Kolkata";
 const NOW = new Date("2026-11-10T09:00:00Z"); // Tuesday 10 November 2026, 14:30 in Kolkata
@@ -29,9 +29,16 @@ const crm = store(
   "Shortlist 5 CRM tools for a 20-person sales team",
   "HubSpot, Pipedrive, Close, Attio and Zoho CRM. Pipedrive Advanced is $34/user/month [1].",
 );
-db.setExtraction(postgres, "Compared managed Postgres hosts on price.", "Neon, Supabase, Amazon RDS", [
-  { entity: "Neon", attribute: "Launch plan price", value: "$19/month", sourceUrl: "https://neon.tech/pricing" },
-]);
+db.setExtraction(
+  postgres,
+  "Compared managed Postgres hosts on price.",
+  "Neon, Supabase, Amazon RDS",
+  [{ entity: "Neon", attribute: "Launch plan price", value: "$19/month", sourceUrl: "https://neon.tech/pricing" }],
+  [
+    { subject: "Neon", query: "Neon pricing Launch plan", domain: "neon.tech" },
+    { subject: "Amazon RDS", query: "Amazon RDS for PostgreSQL pricing", domain: "" },
+  ],
+);
 // A turn that never got its answer must not be remembered.
 db.insertTurn({ conversationId: "b", at: Date.parse("2026-11-09T07:00:00Z"), localDate: "2026-11-09", tz: TZ, question: "Postgres?", context: "" });
 
@@ -93,6 +100,28 @@ test("an ordinary question pulls no full exchanges and no weakly related history
 test("turns already in the conversation history are not recalled a second time", () => {
   const r = recall("Last Tuesday I asked you about Postgres hosting", NOW, TZ, new Set([postgres]));
   assert.deepEqual(ids(r.exchanges), [birthday]);
+});
+
+test("asking whether a recalled answer still holds runs its stored re-check plan", () => {
+  const changed = "Last Tuesday I asked you about Postgres hosting. Has any pricing changed since then?";
+  assert.deepEqual(recheckSearches(changed, recall(changed, NOW, TZ), NOW), [
+    { query: "Neon pricing Launch plan", domains: ["neon.tech"], recency: null },
+    { query: "Amazon RDS for PostgreSQL pricing", domains: [], recency: null },
+  ]);
+
+  // Asking what shipped adds a news search per subject, reaching back past the day we spoke:
+  // seven days and a few hours ago is outside "the last week", so the window is a month.
+  const shipped = "Last Tuesday I asked you about Postgres hosting. Has anything changed or shipped since?";
+  assert.deepEqual(recheckSearches(shipped, recall(shipped, NOW, TZ), NOW).slice(2), [
+    { query: "Neon new release announcement", domains: [], recency: "month" },
+    { query: "Amazon RDS new release announcement", domains: [], recency: "month" },
+  ]);
+
+  // Recalling is not re-checking, and neither is a question about the world.
+  const listing = "What did I ask you on 3 November?";
+  assert.deepEqual(recheckSearches(listing, recall(listing, NOW, TZ), NOW), []);
+  const world = "Has Postgres 18 changed anything about indexing?";
+  assert.deepEqual(recheckSearches(world, recall(world, NOW, TZ), NOW), []);
 });
 
 test("the context block carries the past answer, its sources, its claims and its age", () => {

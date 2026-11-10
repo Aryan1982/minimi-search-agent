@@ -8,12 +8,18 @@
     "node": ">=22.13"
   },
   "scripts": {
+    "predev": "node scripts/check-node.mjs",
     "dev": "tsx watch src/server.ts",
+    "prestart": "node scripts/check-node.mjs",
     "start": "tsx src/server.ts",
+    "pretest": "node scripts/check-node.mjs",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
+    "preseed": "node scripts/check-node.mjs",
     "seed": "tsx scripts/seed.ts",
+    "preimport": "node scripts/check-node.mjs",
     "import": "tsx scripts/import.ts",
+    "preeval": "node scripts/check-node.mjs",
     "eval": "tsx evals/run.ts"
   },
   "dependencies": {
